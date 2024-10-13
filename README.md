@@ -8,7 +8,7 @@ This project generates Go structs based on PostgreSQL database tables. It retrie
 
 ## How It Works
 
-The program connects to a PostgreSQL database using the connection string from the PG_CONN_STR environment variable.
+The program connects to a PostgreSQL database using the connection string from the `PG_CONN_STR` environment variable.
 It fetches a list of tables from the schema and retrieves column information for each table, including:
 * Column name.
 * Data type.
@@ -54,7 +54,7 @@ Run the program with the following command:
 go run main.go
 ```
 
-The program will generate Go files in the directory specified by the PACKAGE environment variable. Each file will contain a Go struct corresponding to a table in the database.
+The program will generate Go files in the directory specified by the `PACKAGE` environment variable. Each file will contain a Go struct corresponding to a table in the database.
 
 ## Example Output
 Here is an example of a struct generated for tables:
