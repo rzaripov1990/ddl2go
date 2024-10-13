@@ -17,6 +17,7 @@ type (
 	Env struct {
 		Package    string
 		PostgresCS string
+		GenGraphQL bool
 	}
 
 	Table struct {
@@ -25,14 +26,15 @@ type (
 	}
 
 	Column struct {
-		Name      string
-		Type      string
-		GoPackage string
-		Comment   string
-		IsComment bool
-		tagJson   string
-		tagDB     string
-		Tag       string
+		Name        string
+		GoType      string
+		GraphQLType string
+		GoPackage   string
+		Comment     string
+		IsComment   bool
+		tagJson     string
+		tagDB       string
+		Tag         string
 	}
 
 	Reference struct {
@@ -46,6 +48,7 @@ func main() {
 	env := Env{
 		Package:    os.Getenv("PACKAGE"),
 		PostgresCS: os.Getenv("PG_CONN_STR"),
+		GenGraphQL: os.Getenv("GRAPHQL") == "true",
 	}
 	_ = os.MkdirAll(env.Package, os.ModePerm)
 
@@ -64,48 +67,82 @@ func main() {
 			Name:    goStructName,
 			Columns: columns,
 		}
+		generateGoStruct(env, tables[i], table)
+		if env.GenGraphQL {
+			generateGraphQLSchema(env, tables[i], table)
+		}
+	}
+	fmt.Println("completed")
+}
 
-		tmpl := `type {{ .Name }} struct {
+func generateGoStruct(env Env, tableName string, table Table) {
+	tmpl := `type {{ .Name }} struct {
 {{- range .Columns }} 
-	{{ .Name }} {{ .Type }} {{ .Tag }} {{if .IsComment }}//{{ .Comment }} {{ end }}
+	{{ .Name }} {{ .GoType }} {{ .Tag }} {{if .IsComment }}//{{ .Comment }} {{ end }}
 {{- end }}
 }
 
 type {{ .Name }}Arr []{{ .Name }}`
-		t, err := template.New("struct").Parse(tmpl)
-		if err != nil {
-			log.Fatal(err)
-		}
+	t, err := template.New("struct").Parse(tmpl)
+	if err != nil {
+		log.Fatal(err)
+	}
 
-		file, err := os.Create(env.Package + "/" + tables[i] + ".go")
-		if err != nil {
-			log.Fatal(err)
-		}
-		defer file.Close()
+	file, err := os.Create(env.Package + "/" + tableName + ".go")
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer file.Close()
 
-		uniqPackages := map[string]bool{}
-		imports := ""
-		for i := range columns {
-			if _, ok := uniqPackages[columns[i].GoPackage]; !ok && columns[i].GoPackage != "" {
-				uniqPackages[columns[i].GoPackage] = true
-				if imports == "" {
-					imports += "import ("
-				}
-				imports += "\n    \"" + columns[i].GoPackage + "\""
+	uniqPackages := map[string]bool{}
+	imports := ""
+	for i := range table.Columns {
+		if _, ok := uniqPackages[table.Columns[i].GoPackage]; !ok && table.Columns[i].GoPackage != "" {
+			uniqPackages[table.Columns[i].GoPackage] = true
+			if imports == "" {
+				imports += "import ("
 			}
-		}
-
-		_, _ = file.WriteString("package " + env.Package + "\n\n")
-		if imports != "" {
-			_, _ = file.WriteString(imports + "\n)\n\n")
-		}
-
-		err = t.Execute(file, table)
-		if err != nil {
-			log.Fatal(err)
+			imports += "\n    \"" + table.Columns[i].GoPackage + "\""
 		}
 	}
-	fmt.Println("completed")
+
+	_, _ = file.WriteString("package " + env.Package + "\n\n")
+	if imports != "" {
+		_, _ = file.WriteString(imports + "\n)\n\n")
+	}
+
+	err = t.Execute(file, table)
+	if err != nil {
+		log.Fatal(err)
+	}
+}
+
+func generateGraphQLSchema(env Env, tableName string, table Table) {
+	tmpl := `type {{ .Name }} {
+{{- range .Columns }} 
+	{{ .Name }}: {{ .GraphQLType }} {{if .IsComment }} # {{ .Comment }} {{ end }}
+{{- end }}
+}
+
+extend type Query {
+    get{{ .Name }}(id: ID!): {{ .Name }}
+    list{{ .Name }}: [{{ .Name }}!]!
+}`
+	t, err := template.New("graphql").Parse(tmpl)
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	file, err := os.Create(env.Package + "/" + tableName + "_schema.graphql")
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer file.Close()
+
+	err = t.Execute(file, table)
+	if err != nil {
+		log.Fatal(err)
+	}
 }
 
 func getTables(db *sqlx.DB) []string {
@@ -126,6 +163,9 @@ func getTables(db *sqlx.DB) []string {
 			log.Fatal(err)
 		}
 		tables = append(tables, table)
+	}
+	if rows.Err() != nil {
+		log.Fatal(rows.Err())
 	}
 
 	return tables
@@ -180,6 +220,7 @@ WHERE
 	}
 
 	for i := range rows {
+		graphqlType := sqlTypeToGraphQL(rows[i].DataType)
 		goType, goPkg := sqlTypeToGo(rows[i].DataType, rows[i].IsNullable == "YES")
 		fieldName, jsonTag := toCamelCase(rows[i].ColumnName)
 
@@ -188,18 +229,20 @@ WHERE
 			rfn, _ := toCamelCase(rows[i].RefColumn)
 
 			rows[i].Comment += rows[i].Comment + " (ref to " + rtn + "." + rfn + ")"
+			graphqlType = "[" + rtn + "!]!"
 		}
 
 		columns = append(columns,
 			Column{
-				Name:      fieldName,
-				Type:      goType,
-				GoPackage: goPkg,
-				Comment:   rows[i].Comment,
-				IsComment: rows[i].Comment != "",
-				tagJson:   jsonTag,
-				tagDB:     rows[i].ColumnName,
-				Tag:       "`json:\"" + jsonTag + "\" db:\"" + rows[i].ColumnName + "\"`",
+				Name:        fieldName,
+				GoType:      goType,
+				GraphQLType: graphqlType,
+				GoPackage:   goPkg,
+				Comment:     rows[i].Comment,
+				IsComment:   rows[i].Comment != "",
+				tagJson:     jsonTag,
+				tagDB:       rows[i].ColumnName,
+				Tag:         "`json:\"" + jsonTag + "\" db:\"" + rows[i].ColumnName + "\"`",
 			},
 		)
 	}
@@ -257,6 +300,27 @@ func sqlTypeToGo(sqlType string, isNull bool) (_type, _pkg string) {
 		_type = "*" + _type
 	}
 	return
+}
+
+func sqlTypeToGraphQL(sqlType string) string {
+	switch strings.ToLower(sqlType) {
+	case "serial", "integer", "smallint", "bigint":
+		return "Int"
+	case "decimal", "numeric", "money", "real", "double precision":
+		return "Float"
+	case "char", "varchar", "text", "character", "character varying":
+		return "String"
+	case "boolean":
+		return "Boolean"
+	case "uuid":
+		return "ID"
+	case "timestamp", "timestamptz", "date", "time", "time without time zone", "timestamp with time zone", "timestamp without time zone":
+		return "String"
+	case "bytea", "json", "jsonb", "xml":
+		return "String"
+	default:
+		return "String"
+	}
 }
 
 func toCamelCase(input string) (upperCS, classicCS string) {
