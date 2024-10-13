@@ -37,7 +37,7 @@ go mod tidy
 ```
 
 Create a .env file in the project's root directory and add the following environment variables:
-```bash
+```env
 PACKAGE=<your-package-name>
 PG_CONN_STR=<your-postgres-connection-string>
 ```
